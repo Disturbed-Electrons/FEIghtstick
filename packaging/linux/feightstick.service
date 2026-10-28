@@ -1,0 +1,18 @@
+[Unit]
+Description=FEIghtstick panel to gamepad bridge
+After=systemd-udevd.service
+
+[Service]
+User=feightstick
+Group=feightstick
+# Keep the physical joystick centered when the service starts or the panel reconnects.
+ExecStart=/usr/local/bin/feightstick run --profile /etc/feightstick/profile.toml --center-on-connect
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

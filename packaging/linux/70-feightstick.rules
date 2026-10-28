@@ -1,0 +1,4 @@
+# Restrict access to FEI HPC2 panels and the virtual input interface.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0f3f", ATTRS{idProduct}=="0100", GROUP="feightstick", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0f3f", ATTRS{idProduct}=="0101", GROUP="feightstick", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="misc", KERNEL=="uinput", GROUP="feightstick", MODE="0660", OPTIONS+="static_node=uinput"

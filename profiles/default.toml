@@ -1,0 +1,75 @@
+# Same controls on every platform. Y axes are up-positive internally.
+# Relative motion is a temporary deflection: delta / 16, released after this delay.
+motion_hold_ms = 120
+
+[[bindings]]
+control = "left.L1"
+target = "a"
+[[bindings]]
+control = "left.L2"
+target = "b"
+[[bindings]]
+control = "left.L3"
+target = "x"
+[[bindings]]
+control = "left.exposure"
+target = "y"
+[[bindings]]
+control = "left.beamSpeedDown"
+target = "left-bumper"
+[[bindings]]
+control = "left.beamSpeedUp"
+target = "right-bumper"
+[[bindings]]
+control = "right.R1"
+target = "back"
+[[bindings]]
+control = "right.R2"
+target = "start"
+[[bindings]]
+control = "right.R3"
+target = "guide"
+[[bindings]]
+control = "left.stigmator"
+target = "left-thumb"
+[[bindings]]
+control = "right.eucentric"
+target = "right-thumb"
+[[bindings]]
+control = "right.darkField"
+target = "dpad-up"
+[[bindings]]
+control = "right.diffraction"
+target = "dpad-down"
+[[bindings]]
+control = "right.stageSpeedDown"
+target = "dpad-left"
+[[bindings]]
+control = "right.stageSpeedUp"
+target = "dpad-right"
+[[bindings]]
+control = "right.stagePosition.X"
+target = "left-x"
+[[bindings]]
+control = "right.stagePosition.Y"
+target = "left-y"
+[[bindings]]
+control = "left.alphaRight"
+target = "right-x"
+[[bindings]]
+control = "left.alphaLeft"
+target = "right-x"
+scale = -1.0
+[[bindings]]
+control = "left.betaUp"
+target = "right-y"
+[[bindings]]
+control = "left.betaDown"
+target = "right-y"
+scale = -1.0
+[[bindings]]
+control = "right.stageZDown"
+target = "left-trigger"
+[[bindings]]
+control = "right.stageZUp"
+target = "right-trigger"
