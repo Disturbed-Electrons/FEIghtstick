@@ -15,10 +15,10 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use feightstick::{
-    device::{Panel, Usb},
+    device::{Panel, PanelEvent, Usb},
     mapping::{DEFAULT_PROFILE, GamepadState, Mapper, Profile},
     output::{Gamepad, Output},
-    protocol::{Decoder, Frame, REPORT_LEN, Side},
+    protocol::{Decoder, Frame, Side},
 };
 
 #[derive(Parser)]
@@ -272,12 +272,14 @@ fn listen(
                     // button releases even when no later packet arrives.
                     let mut idle = false;
                     for _ in 0..64 {
-                        let mut buffer = [0u8; REPORT_LEN + 1];
-                        let Some(length) = connection.panel.read(&mut buffer)? else {
+                        let Some(event) = connection.panel.poll()? else {
                             idle = true;
                             break;
                         };
-                        let frame = connection.decoder.decode(&buffer[..length])?;
+                        let PanelEvent::Input(bytes) = event else {
+                            continue;
+                        };
+                        let frame = connection.decoder.decode(&bytes)?;
                         if let Some(bridge) = &mut bridge {
                             bridge.update(&frame, Instant::now())?;
                         } else {
@@ -337,9 +339,8 @@ fn listen(
             };
             // Bound each drain so a busy panel cannot starve the other panel or shutdown.
             for _ in 0..64 {
-                let mut buffer = [0u8; REPORT_LEN + 1];
-                match connection.panel.read(&mut buffer) {
-                    Ok(Some(length)) => match connection.decoder.decode(&buffer[..length]) {
+                match connection.panel.poll() {
+                    Ok(Some(PanelEvent::Input(bytes))) => match connection.decoder.decode(&bytes) {
                         Ok(frame) => {
                             if frame.sequence_gap {
                                 if side == Side::Right {
@@ -365,6 +366,12 @@ fn listen(
                             eprintln!("{side}: {error}");
                         }
                     },
+                    Ok(Some(PanelEvent::LedComplete {
+                        result: Err(error), ..
+                    })) => {
+                        eprintln!("{side}: LED request failed: {error}");
+                    }
+                    Ok(Some(_)) => (),
                     Ok(None) => break,
                     Err(error) => {
                         eprintln!("{side}: disconnected: {error}");

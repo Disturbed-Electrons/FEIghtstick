@@ -1,8 +1,10 @@
-//! The 20-byte, unnumbered HPC2 input report. All offsets are zero-based.
+//! The 20-byte, unnumbered HPC2 reports. All offsets are zero-based.
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub mod led;
 
 pub const VENDOR_ID: u16 = 0x0f3f;
 pub const REPORT_LEN: usize = 20;
@@ -136,6 +138,8 @@ controls! {
 pub enum DecodeError {
     #[error("expected a {REPORT_LEN}-byte input payload, received {0} bytes")]
     Length(usize),
+    #[error("expected an input report, received operation {0:#04x}")]
+    Operation(u8),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -182,6 +186,9 @@ impl Decoder {
         let bytes: &[u8; REPORT_LEN] = bytes
             .try_into()
             .map_err(|_| DecodeError::Length(bytes.len()))?;
+        if bytes[0] != 0 {
+            return Err(DecodeError::Operation(bytes[0]));
+        }
         let sequence = bytes[1];
         let gap = self
             .sequence

@@ -1,6 +1,6 @@
 # FEI Titan Control Panels as a Virtual Gamepad
 
-Rust driver for FEI Titan control panels connected through the HPC2 USB adapter. FEIghtstick reads either or both panels and exposes a virtual gamepad. Applications can also use the Rust library to access all 36 controls directly.
+Rust driver for FEI Titan control panels connected through the HPC2 USB adapter. FEIghtstick reads either or both panels and exposes a virtual gamepad. Applications can also use the Rust library to access all 36 controls and read or set panel LEDs directly. LED control is independent of the virtual gamepad and does not require a virtual-device driver or entitlement.
 
 ## Installation
 
@@ -10,7 +10,7 @@ Rust driver for FEI Titan control panels connected through the HPC2 USB adapter.
 | Windows 10/11 x64 | Xbox 360 / XInput through ViGEmBus | Signed ViGEmBus driver; installer included |
 | macOS | Generic HID gamepad through `IOHIDUserDevice` | Apple-approved [virtual-device entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.hid.virtual.device) and provisioned signature |
 
-The build selects the platform backend automatically. Panel input and the JSON monitor are available on all three platforms. Windows uses the last signed release of [ViGEmBus](https://github.com/nefarius/ViGEmBus), whose upstream project is retired. Apple approval for macOS virtual-gamepad distribution is pending. macOS applications must support generic HID gamepads.
+The build selects the platform backend automatically. Panel input and the JSON monitor are available on all three platforms. Windows uses the last signed release of [ViGEmBus](https://github.com/nefarius/ViGEmBus), whose upstream project is retired. macOS applications must support generic HID gamepads.
 
 To build locally, install stable [Rust](https://rustup.rs/) and the platform's build tools: Xcode Command Line Tools, Visual Studio C++ Build Tools, or a Linux C toolchain.
 
@@ -38,7 +38,7 @@ feightstick monitor   # Print decoded reports as JSON lines
 feightstick run       # Run the virtual gamepad
 ```
 
-These commands assume the executable is on PATH. From a source checkout, use `cargo run --release -- devices`, `cargo run --release -- monitor`, or `cargo run --release -- run`. The Windows installer leaves the executable in `%ProgramFiles%\FEIghtstick`; in PowerShell, invoke it with `& "$env:ProgramFiles\FEIghtstick\feightstick.exe" devices`. Running the executable without arguments starts the gamepad with the default profile. Avoid running a second gamepad bridge alongside the installed background instance.
+These commands assume the executable is on PATH. From a source checkout, use `cargo run --release -- <command>`. The Windows installer leaves the executable in `%ProgramFiles%\FEIghtstick`; in PowerShell, invoke it with `& "$env:ProgramFiles\FEIghtstick\feightstick.exe" devices`. Running the executable without arguments starts the gamepad with the default profile. Avoid running a second gamepad bridge alongside the installed background instance.
 
 In an interactive `run` or `monitor` session, let the joystick return to center and type **c**, then Enter. Type **q**, then Enter, or press Ctrl-C to stop. The installed background process uses `run --center-on-connect`, which assumes the joystick is centered at each connection. After a report sequence gap, center it again in the interactive session, or release it and reconnect its USB adapter when using the background process.
 
@@ -96,7 +96,7 @@ Available targets: `a`, `b`, `x`, `y`, `left-bumper`, `right-bumper`, `back`, `s
 
 The adapter uses USB HID with vendor ID `0x0f3f`, product ID `0x0100` for the left panel and `0x0101` for the right panel, vendor usage page `0xff00`, and usage 1. The product ID identifies the panel side.
 
-Each input report contains 20 payload bytes. Byte 0 is part of the payload; the HID report ID is separate. Byte 1 is a sequence counter that wraps from 255 to 0. Unknown bytes are ignored. LED output is currently unimplemented.
+Each input report contains 20 payload bytes. Byte 0 is part of the payload; the HID report ID is separate. Ordinary control reports have byte 0 equal to zero, and byte 1 is their sequence counter, wrapping from 255 to 0. Nonzero byte 0 identifies a command reply, which must not enter the control decoder. Unknown control-report bytes are ignored.
 
 The table uses zero-based byte offsets and hexadecimal bit masks. Digital bits can be combined. Motion bytes are decoded as signed two's-complement `i8` values and widened before direction normalization. Decoded button readings expose masked bits in `raw` and the pressed state (0/1) in `value`.
 
@@ -121,12 +121,65 @@ The joystick reports changes in deflection. After centering, the decoder integra
 
 For offline decoding, `feightstick decode --side left` reads JSON arrays of 20 byte values from stdin and emits decoded frames. Use `--side right --centered` for a right-panel stream with a known centered starting position.
 
+### LED commands and channels
+
+LEDs are controlled through the Rust library, independently of gamepad output. The caller chooses when to light or clear indicators; opening, reconnecting, and closing a panel do not change them.
+
+Commands `07` and `08` read or write one electrical channel. All offsets below refer to the 20-byte payload:
+
+| Byte | Request | Reply |
+| --- | --- | --- |
+| 0 | Operation `07` / `08` | Matching operation |
+| 1 | Zero | Status; zero means success |
+| 2 | Channel index | Matching channel |
+| 3 | Read: zero; write: `00` off / `01` on | Read: `00` off / `01` on |
+| 4–18 | Zero | Unused by this implementation |
+| 19 | Request sequence | Matching request sequence |
+
+HIDAPI writes prepend a zero report-ID byte (21 bytes total); native macOS `IOHIDDeviceSetReport` takes the 20-byte payload with report ID zero. Replies arrive on the input endpoint. USB write success alone does not confirm a command or a visible light change.
+
+Channel indexes below are decimal. These are electrical channels, not input-button IDs or a count of physical indicators:
+
+| Panel | Indicator | Red channel | Green channel |
+| --- | --- | --- | --- |
+| Left | Coarse | 0 | — |
+| Left | Fine | 8 | — |
+| Left | L1 | 11 | 3 |
+| Left | L2 | 10 | 2 |
+| Left | L3 | 9 | 1 |
+| Left | Exposure | 6 | — |
+| Left | Stigmator | 14 | — |
+| Right | R1 | 13 | 4 |
+| Right | R2 | 12 | 3 |
+| Right | R3 | 11 | 2 |
+| Right | Wobbler | 5 | — |
+| Right | Dark Field | 6 | — |
+| Right | Diffraction | 14 | — |
+
+Left channels **4, 5, 12, and 13** acknowledge writes but produced no visible light and continued reading off after on-writes. They remain accessible through the channel API. Left indexes 7 and 15 and right indexes 0, 1, 7, 8, 9, 10, and 15 are unassigned and rejected before writing. Coarse/Fine LEDs are addressed independently of intensity or multifunction input controls.
+
+`set_indicator_color` turns off the other color before enabling the requested one; `Color::Off` clears both channels. Green is rejected for red-only indicators. A color change uses up to two acknowledged writes and is not atomic: earlier writes remain in effect if a later write fails. `Indicator::channels()` exposes the red and optional green indexes; there is no universal offset between them.
+
+### Rust LED API
+
+`Panel::poll()` is the sole report reader, replacing raw `Panel::read`. It returns control input (`PanelEvent::Input`), LED completion (`LedComplete`), or intermediate/unmatched command replies (`Reply`). Only input events belong in `Decoder`, which also rejects replies before changing retained state.
+
+| Method | Operation | Successful completion |
+| --- | --- | --- |
+| `read_led(channel)` | Read one channel | `Some(bool)` |
+| `set_led(channel, enabled)` | Switch one channel | `None` |
+| `set_indicator_color(indicator, color)` | Select red, green, or off | `None` |
+
+Each method starts an operation and returns a connection-local `RequestId`. Continue polling, including while controls are idle, until its matching `LedComplete` arrives; check the result before starting another operation. Each panel permits one pending operation (`RequestError::Busy` otherwise), with independent request tracking. Polling does not wait for input or acknowledgements, though HID writes use the backend's synchronous call.
+
+Replies must match the operation, channel, and byte-19 request sequence. This sequence wraps independently of the control-report sequence. Writes complete on status zero; state readback requires a separate read. Nonzero status, non-Boolean readback, short writes, and timeouts are reported as errors. Status codes are reported numerically; `02` indicates an unassigned channel. The per-exchange deadline is 500 ms (`LED_REPLY_TIMEOUT`), with no automatic retries. On a HID read error or disconnect, discard the connection and pending operation and reopen the panel when available.
+
 ## Development
 
 The project contains one library and one executable:
 
-- `protocol.rs`: hardware mappings and joystick decoding.
-- `device.rs`: HID enumeration and nonexclusive reads through `hidapi`.
+- `protocol.rs`: input mappings and joystick decoding; `protocol/led.rs`: LED mappings, command encoding, and reply fields.
+- `device.rs`: HID enumeration, nonexclusive transport, report routing, and pending LED exchanges through `hidapi`.
 - `mapping.rs`: TOML profiles and gamepad state.
 - `output/`: Linux, Windows, and macOS backends.
 - `main.rs`: CLI, polling, reconnects, and centering.
