@@ -1,6 +1,6 @@
 # FEI Titan Control Panels as a Virtual Gamepad
 
-Rust driver for FEI Titan control panels connected through the HPC2 USB adapter. FEIghtstick reads either or both panels and exposes a virtual gamepad. Applications can also use the Rust library to access all 36 controls and read or set panel LEDs directly. LED control is independent of the virtual gamepad and does not require a virtual-device driver or entitlement.
+Rust driver for FEI Titan control panels connected through the HPC2 USB adapter. FEIghtstick reads either or both panels and exposes a virtual gamepad. The Rust library also provides all 36 controls, individual LEDs, and label illumination independently of gamepad output. Lighting control requires no virtual-device driver or entitlement.
 
 ## Installation
 
@@ -123,7 +123,7 @@ For offline decoding, `feightstick decode --side left` reads JSON arrays of 20 b
 
 ### LED commands and channels
 
-LEDs are controlled through the Rust library, independently of gamepad output. The caller chooses when to light or clear indicators; opening, reconnecting, and closing a panel do not change them.
+The caller controls indicator LEDs and label illumination through the Rust library. Opening, reconnecting, and closing a panel leave both unchanged.
 
 Commands `07` and `08` read or write one electrical channel. All offsets below refer to the 20-byte payload:
 
@@ -133,10 +133,10 @@ Commands `07` and `08` read or write one electrical channel. All offsets below r
 | 1 | Zero | Status; zero means success |
 | 2 | Channel index | Matching channel |
 | 3 | Read: zero; write: `00` off / `01` on | Read: `00` off / `01` on |
-| 4–18 | Zero | Unused by this implementation |
+| 4–18 | Zero | Ignored |
 | 19 | Request sequence | Matching request sequence |
 
-HIDAPI writes prepend a zero report-ID byte (21 bytes total); native macOS `IOHIDDeviceSetReport` takes the 20-byte payload with report ID zero. Replies arrive on the input endpoint. USB write success alone does not confirm a command or a visible light change.
+HIDAPI writes prepend a zero report-ID byte (21 bytes total); native macOS `IOHIDDeviceSetReport` takes the 20-byte payload with report ID zero. Replies arrive on the input endpoint.
 
 Channel indexes below are decimal. These are electrical channels, not input-button IDs or a count of physical indicators:
 
@@ -160,26 +160,37 @@ Left channels **4, 5, 12, and 13** acknowledge writes but produced no visible li
 
 `set_indicator_color` turns off the other color before enabling the requested one; `Color::Off` clears both channels. Green is rejected for red-only indicators. A color change uses up to two acknowledged writes and is not atomic: earlier writes remain in effect if a later write fails. `Indicator::channels()` exposes the red and optional green indexes; there is no universal offset between them.
 
-### Rust LED API
+Command `09` reads all 16 LED channels in one exchange. Requests set bytes 1–18 to zero and byte 19 to the request sequence. Replies use the operation, status, and sequence fields above; bytes 2–17 form a 16-byte array (`00` off, `01` on), with channel `n` at byte `2 + n`. Byte 18 is ignored. Unassigned channels read off; label illumination is separate.
 
-`Panel::poll()` is the sole report reader, replacing raw `Panel::read`. It returns control input (`PanelEvent::Input`), LED completion (`LedComplete`), or intermediate/unmatched command replies (`Reply`). Only input events belong in `Decoder`, which also rejects replies before changing retained state.
+### Label illumination
 
-| Method | Operation | Successful completion |
+Each panel has one on/off flag for its printed-label lighting, separate from the indicator channels.
+
+Commands `05` (read) and `06` (write) use the LED command framing, with the flag in byte 2: `00` off or `01` on. Read requests set byte 2 to zero; all requests set byte 1 and bytes 3–18 to zero and carry the request sequence in byte 19. Replies use the same operation, status, and sequence fields as LED replies; reads return the flag in byte 2.
+
+### Rust lighting API
+
+`Panel::poll()` is the sole report reader. Pass `PanelEvent::Input` reports to `Decoder`; completion events carry request results, and `Reply` carries intermediate or unmatched command replies.
+
+| Method | Completion event | Successful result |
 | --- | --- | --- |
-| `read_led(channel)` | Read one channel | `Some(bool)` |
-| `set_led(channel, enabled)` | Switch one channel | `None` |
-| `set_indicator_color(indicator, color)` | Select red, green, or off | `None` |
+| `read_led(channel)` | `LedComplete` | `Some(bool)` |
+| `read_led_states()` | `LedStatesComplete` | `[bool; 16]`, indexed by wire channel |
+| `set_led(channel, enabled)` | `LedComplete` | `None` |
+| `set_indicator_color(indicator, color)` | `LedComplete` | `None` |
+| `read_illumination()` | `IlluminationComplete` | `Some(bool)` |
+| `set_illumination(enabled)` | `IlluminationComplete` | `None` |
 
-Each method starts an operation and returns a connection-local `RequestId`. Continue polling, including while controls are idle, until its matching `LedComplete` arrives; check the result before starting another operation. Each panel permits one pending operation (`RequestError::Busy` otherwise), with independent request tracking. Polling does not wait for input or acknowledgements, though HID writes use the backend's synchronous call.
+Each method returns a connection-local `RequestId`. Call `poll()` regularly, including while controls are idle, until the corresponding completion event arrives with that ID. LED and illumination methods share one pending operation per panel; another request returns `RequestError::Busy`. HID writes are synchronous; polling reads without waiting and services request deadlines.
 
-Replies must match the operation, channel, and byte-19 request sequence. This sequence wraps independently of the control-report sequence. Writes complete on status zero; state readback requires a separate read. Nonzero status, non-Boolean readback, short writes, and timeouts are reported as errors. Status codes are reported numerically; `02` indicates an unassigned channel. The per-exchange deadline is 500 ms (`LED_REPLY_TIMEOUT`), with no automatic retries. On a HID read error or disconnect, discard the connection and pending operation and reopen the panel when available.
+Replies match the operation and byte-19 request sequence; single-channel LED replies also match the channel. The request sequence wraps independently of the input sequence. Writes complete on status zero; readback requires a separate read. Nonzero status, non-Boolean readback, short writes, and timeouts return errors. Status `02` indicates an unassigned LED channel. Each exchange has a 500 ms deadline (`COMMAND_REPLY_TIMEOUT`) and no automatic retries. After a HID read error or disconnect, discard the connection and pending operation, then reopen the panel when available.
 
 ## Development
 
 The project contains one library and one executable:
 
-- `protocol.rs`: input mappings and joystick decoding; `protocol/led.rs`: LED mappings, command encoding, and reply fields.
-- `device.rs`: HID enumeration, nonexclusive transport, report routing, and pending LED exchanges through `hidapi`.
+- `protocol.rs` and `protocol/`: input decoding, LED mappings, and lighting commands.
+- `device.rs`: HID enumeration, nonexclusive transport, report routing, and pending lighting exchanges through `hidapi`.
 - `mapping.rs`: TOML profiles and gamepad state.
 - `output/`: Linux, Windows, and macOS backends.
 - `main.rs`: CLI, polling, reconnects, and centering.

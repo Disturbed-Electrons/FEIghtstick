@@ -1,4 +1,4 @@
-//! Verified HPC2 indicator channels and single-channel commands.
+//! HPC2 indicator channels and LED commands.
 use thiserror::Error;
 
 use super::{REPORT_LEN, Side};
@@ -87,6 +87,14 @@ pub struct LedRequest {
 }
 
 impl LedRequest {
+    pub const fn read_states() -> Self {
+        Self {
+            operation: 0x09,
+            channel: 0,
+            value: 0,
+        }
+    }
+
     pub fn read(side: Side, channel: u8) -> Result<Self, LedError> {
         let channels = match side {
             Side::Left => LEFT_CHANNELS,
@@ -122,7 +130,7 @@ impl LedRequest {
     pub(crate) fn matches(self, reply: CommandReply, sequence: u8) -> bool {
         reply.operation == self.operation
             && reply.sequence == sequence
-            && reply.channel == self.channel
+            && (self.operation == 0x09 || reply.channel == self.channel)
     }
 
     pub(crate) const fn is_read(self) -> bool {

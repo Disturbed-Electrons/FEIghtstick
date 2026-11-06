@@ -1,4 +1,4 @@
-//! Nonexclusive HID transport with one report reader and one pending LED request per panel.
+//! Nonexclusive HID transport with one report reader and one pending command per panel.
 use std::{
     ffi::{CStr, CString},
     time::{Duration, Instant},
@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::protocol::{
     REPORT_LEN, Side, VENDOR_ID,
+    illumination::IlluminationRequest,
     led::{Color, CommandReply, Indicator, LedError, LedRequest},
 };
 
@@ -29,8 +30,8 @@ pub enum DeviceError {
     ReportLength(usize),
 }
 
-/// Per-exchange deadline, chosen for the reference implementation rather than specified by firmware.
-pub const LED_REPLY_TIMEOUT: Duration = Duration::from_millis(500);
+/// Deadline for a pending panel command.
+pub const COMMAND_REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Completion token scoped to one panel connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,17 +43,17 @@ pub enum RequestError {
     Led(#[from] LedError),
     #[error(transparent)]
     Hid(#[from] HidError),
-    #[error("an LED request is already pending")]
+    #[error("a panel request is already pending")]
     Busy,
     #[error("{0:?} belongs to the other panel")]
     WrongSide(Indicator),
     #[error("wrote {0} bytes instead of the required 21")]
     ShortWrite(usize),
-    #[error("LED reply timed out")]
+    #[error("panel reply timed out")]
     Timeout,
-    #[error("LED command returned status {0:#04x}")]
+    #[error("panel command returned status {0:#04x}")]
     Status(u8),
-    #[error("LED read returned non-Boolean state {0:#04x}")]
+    #[error("panel read returned non-Boolean state {0:#04x}")]
     State(u8),
 }
 
@@ -64,13 +65,95 @@ pub enum PanelEvent {
         id: RequestId,
         result: Result<Option<bool>, RequestError>,
     },
+    /// All 16 states, indexed by wire channel.
+    LedStatesComplete {
+        id: RequestId,
+        result: Result<[bool; 16], RequestError>,
+    },
+    /// Reads return Some(enabled); acknowledged writes return None.
+    IlluminationComplete {
+        id: RequestId,
+        result: Result<Option<bool>, RequestError>,
+    },
     /// Intermediate acknowledgements and unmatched replies never enter the input decoder.
     Reply(CommandReply),
 }
 
+#[derive(Clone, Copy)]
+enum Request {
+    Led(LedRequest),
+    LedStates,
+    Illumination(IlluminationRequest),
+}
+
+impl Request {
+    fn payload(self, sequence: u8) -> [u8; REPORT_LEN] {
+        match self {
+            Self::Led(request) => request.payload(sequence),
+            Self::LedStates => LedRequest::read_states().payload(sequence),
+            Self::Illumination(request) => request.payload(sequence),
+        }
+    }
+
+    fn matches(self, reply: CommandReply, sequence: u8) -> bool {
+        match self {
+            Self::Led(request) => request.matches(reply, sequence),
+            Self::LedStates => LedRequest::read_states().matches(reply, sequence),
+            Self::Illumination(request) => {
+                reply.operation == request.operation() && reply.sequence == sequence
+            }
+        }
+    }
+
+    fn read_value(self, bytes: &[u8; REPORT_LEN]) -> Option<u8> {
+        match self {
+            Self::Led(request) if request.is_read() => Some(bytes[3]),
+            Self::Illumination(IlluminationRequest::Read) => Some(bytes[2]),
+            _ => None,
+        }
+    }
+
+    fn complete(
+        self,
+        id: RequestId,
+        result: Result<&[u8; REPORT_LEN], RequestError>,
+    ) -> PanelEvent {
+        let read_state =
+            |bytes: &[u8; REPORT_LEN]| self.read_value(bytes).map(decode_state).transpose();
+        match self {
+            Self::Led(_) => PanelEvent::LedComplete {
+                id,
+                result: result.and_then(read_state),
+            },
+            Self::LedStates => PanelEvent::LedStatesComplete {
+                id,
+                result: result.and_then(|bytes| {
+                    let mut states = [false; 16];
+                    for (index, state) in states.iter_mut().enumerate() {
+                        *state = decode_state(bytes[2 + index])?;
+                    }
+                    Ok(states)
+                }),
+            },
+            Self::Illumination(_) => PanelEvent::IlluminationComplete {
+                id,
+                result: result.and_then(read_state),
+            },
+        }
+    }
+}
+
+fn decode_state(value: u8) -> Result<bool, RequestError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        value => Err(RequestError::State(value)),
+    }
+}
+
 struct Pending {
     id: RequestId,
-    request: LedRequest,
+    request: Request,
     next: Option<LedRequest>,
     sequence: u8,
     deadline: Instant,
@@ -85,12 +168,33 @@ pub struct Panel {
 }
 
 impl Panel {
+    pub fn read_illumination(&mut self) -> Result<RequestId, RequestError> {
+        self.start(Request::Illumination(IlluminationRequest::Read), None)
+    }
+
+    pub fn set_illumination(&mut self, enabled: bool) -> Result<RequestId, RequestError> {
+        self.start(
+            Request::Illumination(IlluminationRequest::Write(enabled)),
+            None,
+        )
+    }
+
     pub fn read_led(&mut self, channel: u8) -> Result<RequestId, RequestError> {
-        self.start(LedRequest::read(self.info.side, channel)?, None)
+        self.start(
+            Request::Led(LedRequest::read(self.info.side, channel)?),
+            None,
+        )
+    }
+
+    pub fn read_led_states(&mut self) -> Result<RequestId, RequestError> {
+        self.start(Request::LedStates, None)
     }
 
     pub fn set_led(&mut self, channel: u8, enabled: bool) -> Result<RequestId, RequestError> {
-        self.start(LedRequest::write(self.info.side, channel, enabled)?, None)
+        self.start(
+            Request::Led(LedRequest::write(self.info.side, channel, enabled)?),
+            None,
+        )
     }
 
     /// Disable the other color first. Multiple writes are acknowledged individually, not atomic.
@@ -116,10 +220,10 @@ impl Panel {
         let next = next
             .map(|(channel, enabled)| LedRequest::write(self.info.side, channel, enabled))
             .transpose()?;
-        self.start(request, next)
+        self.start(Request::Led(request), next)
     }
 
-    fn send(&mut self, request: LedRequest) -> Result<(u8, Instant), RequestError> {
+    fn send(&mut self, request: Request) -> Result<(u8, Instant), RequestError> {
         self.sequence = self.sequence.wrapping_add(1);
         let mut bytes = [0; REPORT_LEN + 1];
         bytes[1..].copy_from_slice(&request.payload(self.sequence));
@@ -127,12 +231,12 @@ impl Panel {
         if written != bytes.len() {
             return Err(RequestError::ShortWrite(written));
         }
-        Ok((self.sequence, Instant::now() + LED_REPLY_TIMEOUT))
+        Ok((self.sequence, Instant::now() + COMMAND_REPLY_TIMEOUT))
     }
 
     fn start(
         &mut self,
-        request: LedRequest,
+        request: Request,
         next: Option<LedRequest>,
     ) -> Result<RequestId, RequestError> {
         if self.pending.is_some() {
@@ -155,10 +259,8 @@ impl Panel {
     /// None means no report, not a disconnect or a released button.
     pub fn poll(&mut self) -> Result<Option<PanelEvent>, DeviceError> {
         if let Some(pending) = self.pending.take_if(|p| Instant::now() >= p.deadline) {
-            return Ok(Some(PanelEvent::LedComplete {
-                id: pending.id,
-                result: Err(RequestError::Timeout),
-            }));
+            let result = Err(RequestError::Timeout);
+            return Ok(Some(pending.request.complete(pending.id, result)));
         }
         let mut buffer = [0; REPORT_LEN + 1];
         let length = self.device.read_timeout(&mut buffer, 0)?;
@@ -177,24 +279,14 @@ impl Panel {
         else {
             return Ok(Some(PanelEvent::Reply(reply)));
         };
-        let result = if reply.status != 0 {
-            Err(RequestError::Status(reply.status))
-        } else if pending.request.is_read() {
-            match reply.value {
-                0 => Ok(Some(false)),
-                1 => Ok(Some(true)),
-                value => Err(RequestError::State(value)),
-            }
-        } else {
-            Ok(None)
+        let result = match reply.status {
+            0 => Ok(&bytes),
+            status => Err(RequestError::Status(status)),
         };
         if result.is_err() || pending.next.is_none() {
-            return Ok(Some(PanelEvent::LedComplete {
-                id: pending.id,
-                result,
-            }));
+            return Ok(Some(pending.request.complete(pending.id, result)));
         }
-        let request = pending.next.take().unwrap();
+        let request = Request::Led(pending.next.take().unwrap());
         match self.send(request) {
             Ok((sequence, deadline)) => {
                 self.pending = Some(Pending {
@@ -205,10 +297,7 @@ impl Panel {
                 });
                 Ok(Some(PanelEvent::Reply(reply)))
             }
-            Err(error) => Ok(Some(PanelEvent::LedComplete {
-                id: pending.id,
-                result: Err(error),
-            })),
+            Err(error) => Ok(Some(pending.request.complete(pending.id, Err(error)))),
         }
     }
 }

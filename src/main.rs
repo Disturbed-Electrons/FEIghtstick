@@ -366,10 +366,18 @@ fn listen(
                             eprintln!("{side}: {error}");
                         }
                     },
-                    Ok(Some(PanelEvent::LedComplete {
-                        result: Err(error), ..
-                    })) => {
-                        eprintln!("{side}: LED request failed: {error}");
+                    Ok(Some(
+                        PanelEvent::LedComplete {
+                            result: Err(error), ..
+                        }
+                        | PanelEvent::LedStatesComplete {
+                            result: Err(error), ..
+                        }
+                        | PanelEvent::IlluminationComplete {
+                            result: Err(error), ..
+                        },
+                    )) => {
+                        eprintln!("{side}: panel request failed: {error}");
                     }
                     Ok(Some(_)) => (),
                     Ok(None) => break,

@@ -4,6 +4,7 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod illumination;
 pub mod led;
 
 pub const VENDOR_ID: u16 = 0x0f3f;
