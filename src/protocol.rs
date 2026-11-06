@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod illumination;
+pub mod information;
 pub mod led;
 
 pub const VENDOR_ID: u16 = 0x0f3f;
@@ -149,7 +150,7 @@ pub struct Reading {
     /// Masked button bits, pressure byte, or signed wire delta before normalization.
     pub raw: i16,
     /// Button/pressure level, normalized relative delta, or estimated joystick position.
-    /// A joystick position is unknown until explicitly centered, and after report loss.
+    /// Joystick position becomes available after centering and is cleared on a sequence gap.
     pub value: Option<i32>,
 }
 
@@ -161,7 +162,7 @@ pub struct Frame {
     pub readings: Vec<Reading>,
 }
 
-/// One decoder per physical panel. Idle time does not invalidate held controls.
+/// One decoder per physical panel, retaining its sequence and joystick position between reports.
 #[derive(Debug)]
 pub struct Decoder {
     side: Side,

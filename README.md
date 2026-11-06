@@ -1,6 +1,6 @@
 # FEI Titan Control Panels as a Virtual Gamepad
 
-Rust driver for FEI Titan control panels connected through the HPC2 USB adapter. FEIghtstick reads either or both panels and exposes a virtual gamepad. The Rust library also provides all 36 controls, individual LEDs, and label illumination independently of gamepad output. Lighting control requires no virtual-device driver or entitlement.
+Rust driver for FEI Titan control panels connected through the HPC2 USB adapter. FEIghtstick reads either or both panels and exposes a virtual gamepad. The Rust library provides direct access to all 36 controls, individual LEDs, label illumination, and device information through USB HID.
 
 ## Installation
 
@@ -10,7 +10,7 @@ Rust driver for FEI Titan control panels connected through the HPC2 USB adapter.
 | Windows 10/11 x64 | Xbox 360 / XInput through ViGEmBus | Signed ViGEmBus driver; installer included |
 | macOS | Generic HID gamepad through `IOHIDUserDevice` | Apple-approved [virtual-device entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.hid.virtual.device) and provisioned signature |
 
-The build selects the platform backend automatically. Panel input and the JSON monitor are available on all three platforms. Windows uses the last signed release of [ViGEmBus](https://github.com/nefarius/ViGEmBus), whose upstream project is retired. macOS applications must support generic HID gamepads.
+The build selects the platform backend automatically. Panel input and the JSON monitor are available on all three platforms. Windows uses the signed [ViGEmBus](https://github.com/nefarius/ViGEmBus) driver. macOS applications must support generic HID gamepads.
 
 To build locally, install stable [Rust](https://rustup.rs/) and the platform's build tools: Xcode Command Line Tools, Visual Studio C++ Build Tools, or a Linux C toolchain.
 
@@ -96,7 +96,7 @@ Available targets: `a`, `b`, `x`, `y`, `left-bumper`, `right-bumper`, `back`, `s
 
 The adapter uses USB HID with vendor ID `0x0f3f`, product ID `0x0100` for the left panel and `0x0101` for the right panel, vendor usage page `0xff00`, and usage 1. The product ID identifies the panel side.
 
-Each input report contains 20 payload bytes. Byte 0 is part of the payload; the HID report ID is separate. Ordinary control reports have byte 0 equal to zero, and byte 1 is their sequence counter, wrapping from 255 to 0. Nonzero byte 0 identifies a command reply, which must not enter the control decoder. Unknown control-report bytes are ignored.
+Each input report contains 20 payload bytes, starting at byte 0. The HID report ID precedes the payload in APIs that include it. Ordinary control reports have byte 0 equal to zero, and byte 1 is their sequence counter, wrapping from 255 to 0. Nonzero byte 0 identifies a command reply, routed to request handling. Unknown control-report bytes are ignored.
 
 The table uses zero-based byte offsets and hexadecimal bit masks. Digital bits can be combined. Motion bytes are decoded as signed two's-complement `i8` values and widened before direction normalization. Decoded button readings expose masked bits in `raw` and the pressed state (0/1) in `value`.
 
@@ -115,9 +115,9 @@ The table uses zero-based byte offsets and hexadecimal bit masks. Digital bits c
 | Right | 14 / 15 | Signed encoder deltas: `focus` / `focusStep`; focusStep sign is reversed |
 | Right | 16 / 17 | Signed encoder deltas: `magnification` / `multifunctionY` |
 
-Prefix each control ID with `left.` or `right.` according to its side. Trackball and joystick values use right/up positive; encoders use clockwise positive. Pressure readings have an observed reference maximum of 15 and represent uncalibrated levels. The decoder preserves larger readings.
+Prefix each control ID with `left.` or `right.` according to its side. Trackball and joystick values use right/up positive; encoders use clockwise positive. Pressure readings are unsigned levels, normalized against 15 for gamepad mapping. The decoder preserves the full byte.
 
-The joystick reports changes in deflection. After centering, the decoder integrates these deltas to estimate position. A zero delta leaves the position unchanged. The observed reference excursion is approximately ±90. Joystick values are `null` before centering and after a sequence discontinuity, including duplicate reports. Buttons and pressure are read directly from each report. Reconnecting starts a fresh decoder.
+The joystick reports changes in deflection. After centering, the decoder integrates these deltas to estimate position. A zero delta leaves the position unchanged. Gamepad mapping normalizes joystick position against ±90. Joystick values are `null` before centering and after a sequence discontinuity, including duplicate reports. Buttons and pressure are read directly from each report. Reconnecting starts a fresh decoder.
 
 For offline decoding, `feightstick decode --side left` reads JSON arrays of 20 byte values from stdin and emits decoded frames. Use `--side right --centered` for a right-panel stream with a known centered starting position.
 
@@ -138,7 +138,7 @@ Commands `07` and `08` read or write one electrical channel. All offsets below r
 
 HIDAPI writes prepend a zero report-ID byte (21 bytes total); native macOS `IOHIDDeviceSetReport` takes the 20-byte payload with report ID zero. Replies arrive on the input endpoint.
 
-Channel indexes below are decimal. These are electrical channels, not input-button IDs or a count of physical indicators:
+The table lists electrical output channels in decimal:
 
 | Panel | Indicator | Red channel | Green channel |
 | --- | --- | --- | --- |
@@ -156,19 +156,25 @@ Channel indexes below are decimal. These are electrical channels, not input-butt
 | Right | Dark Field | 6 | — |
 | Right | Diffraction | 14 | — |
 
-Left channels **4, 5, 12, and 13** acknowledge writes but produced no visible light and continued reading off after on-writes. They remain accessible through the channel API. Left indexes 7 and 15 and right indexes 0, 1, 7, 8, 9, 10, and 15 are unassigned and rejected before writing. Coarse/Fine LEDs are addressed independently of intensity or multifunction input controls.
+Left channels **4, 5, 12, and 13** are accessible through the channel API; they acknowledge writes and read back off, with no visible light output. Left indexes 7 and 15 and right indexes 0, 1, 7, 8, 9, 10, and 15 are unassigned and rejected before writing. Use LED channel IDs to address the Coarse/Fine indicators.
 
-`set_indicator_color` turns off the other color before enabling the requested one; `Color::Off` clears both channels. Green is rejected for red-only indicators. A color change uses up to two acknowledged writes and is not atomic: earlier writes remain in effect if a later write fails. `Indicator::channels()` exposes the red and optional green indexes; there is no universal offset between them.
+`set_indicator_color` turns off the other color before enabling the requested one; `Color::Off` clears both channels. Green is rejected for red-only indicators. A color change sends up to two acknowledged writes in order; earlier writes remain applied if a later write fails. `Indicator::channels()` exposes the red and optional green indexes; there is no universal offset between them.
 
 Command `09` reads all 16 LED channels in one exchange. Requests set bytes 1–18 to zero and byte 19 to the request sequence. Replies use the operation, status, and sequence fields above; bytes 2–17 form a 16-byte array (`00` off, `01` on), with channel `n` at byte `2 + n`. Byte 18 is ignored. Unassigned channels read off; label illumination is separate.
 
 ### Label illumination
 
-Each panel has one on/off flag for its printed-label lighting, separate from the indicator channels.
+Each panel has one on/off flag for its printed-label lighting. Indicator LEDs have their own channel settings.
 
 Commands `05` (read) and `06` (write) use the LED command framing, with the flag in byte 2: `00` off or `01` on. Read requests set byte 2 to zero; all requests set byte 1 and bytes 3–18 to zero and carry the request sequence in byte 19. Replies use the same operation, status, and sequence fields as LED replies; reads return the flag in byte 2.
 
-### Rust lighting API
+### Device information
+
+Command `02` queries panel information. Requests set bytes 1–18 to zero and byte 19 to the request sequence. Replies use the common operation, status, and sequence fields, with information in bytes 2–18.
+
+`PanelInformation::data` preserves all 17 information bytes, with `data[n]` corresponding to payload byte `2 + n`. `version_major()` reads payload byte 6 and `version_minor()` reads byte 5; the original driver's numeric version is `100 × major + minor`. All other fields remain raw: payload bytes 7 and 8 are available as `data[5]` and `data[6]`.
+
+### Rust command API
 
 `Panel::poll()` is the sole report reader. Pass `PanelEvent::Input` reports to `Decoder`; completion events carry request results, and `Reply` carries intermediate or unmatched command replies.
 
@@ -180,22 +186,23 @@ Commands `05` (read) and `06` (write) use the LED command framing, with the flag
 | `set_indicator_color(indicator, color)` | `LedComplete` | `None` |
 | `read_illumination()` | `IlluminationComplete` | `Some(bool)` |
 | `set_illumination(enabled)` | `IlluminationComplete` | `None` |
+| `read_information()` | `InformationComplete` | `PanelInformation` |
 
-Each method returns a connection-local `RequestId`. Call `poll()` regularly, including while controls are idle, until the corresponding completion event arrives with that ID. LED and illumination methods share one pending operation per panel; another request returns `RequestError::Busy`. HID writes are synchronous; polling reads without waiting and services request deadlines.
+Each method returns a `RequestId` scoped to the panel connection. Call `poll()` regularly, including while controls are idle, until a completion event arrives with that ID. Each panel handles one command at a time; another request returns `RequestError::Busy`. HID writes are synchronous. Polling reads available reports and services request deadlines.
 
-Replies match the operation and byte-19 request sequence; single-channel LED replies also match the channel. The request sequence wraps independently of the input sequence. Writes complete on status zero; readback requires a separate read. Nonzero status, non-Boolean readback, short writes, and timeouts return errors. Status `02` indicates an unassigned LED channel. Each exchange has a 500 ms deadline (`COMMAND_REPLY_TIMEOUT`) and no automatic retries. After a HID read error or disconnect, discard the connection and pending operation, then reopen the panel when available.
+Replies match the operation and byte-19 request sequence; single-channel LED replies also match the channel. The request sequence wraps independently of the input sequence. Writes complete on status zero; readback requires a separate read. Errors report nonzero status, non-Boolean lighting states, short writes, and timeouts. Status `02` indicates an unassigned LED channel. Each exchange has a 500 ms deadline (`COMMAND_REPLY_TIMEOUT`) and no automatic retries. After a HID read error or disconnect, discard the connection and pending operation, then reopen the panel when available.
 
 ## Development
 
 The project contains one library and one executable:
 
-- `protocol.rs` and `protocol/`: input decoding, LED mappings, and lighting commands.
-- `device.rs`: HID enumeration, nonexclusive transport, report routing, and pending lighting exchanges through `hidapi`.
+- `protocol.rs` and `protocol/`: input decoding, LED mappings, lighting commands, and panel information.
+- `device.rs`: HID enumeration, nonexclusive transport, report routing, and pending command exchanges through `hidapi`.
 - `mapping.rs`: TOML profiles and gamepad state.
 - `output/`: Linux, Windows, and macOS backends.
 - `main.rs`: CLI, polling, reconnects, and centering.
 
-Applications can use `Decoder`, `Frame`, and `Control` directly. Protocol decoding operates independently of USB transport and gamepad output. Native macOS FFI is contained in `output/macos.rs`.
+Applications can decode report data directly through `Decoder`, `Frame`, and `Control`. Native macOS FFI is contained in `output/macos.rs`.
 
 ```sh
 cargo fmt --check

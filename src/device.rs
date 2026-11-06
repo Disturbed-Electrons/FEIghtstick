@@ -10,6 +10,7 @@ use thiserror::Error;
 use crate::protocol::{
     REPORT_LEN, Side, VENDOR_ID,
     illumination::IlluminationRequest,
+    information::{InformationRequest, PanelInformation},
     led::{Color, CommandReply, Indicator, LedError, LedRequest},
 };
 
@@ -75,7 +76,11 @@ pub enum PanelEvent {
         id: RequestId,
         result: Result<Option<bool>, RequestError>,
     },
-    /// Intermediate acknowledgements and unmatched replies never enter the input decoder.
+    InformationComplete {
+        id: RequestId,
+        result: Result<PanelInformation, RequestError>,
+    },
+    /// Intermediate acknowledgements and unmatched command replies.
     Reply(CommandReply),
 }
 
@@ -84,6 +89,7 @@ enum Request {
     Led(LedRequest),
     LedStates,
     Illumination(IlluminationRequest),
+    Information,
 }
 
 impl Request {
@@ -92,6 +98,7 @@ impl Request {
             Self::Led(request) => request.payload(sequence),
             Self::LedStates => LedRequest::read_states().payload(sequence),
             Self::Illumination(request) => request.payload(sequence),
+            Self::Information => InformationRequest.payload(sequence),
         }
     }
 
@@ -101,6 +108,9 @@ impl Request {
             Self::LedStates => LedRequest::read_states().matches(reply, sequence),
             Self::Illumination(request) => {
                 reply.operation == request.operation() && reply.sequence == sequence
+            }
+            Self::Information => {
+                reply.operation == InformationRequest::OPERATION && reply.sequence == sequence
             }
         }
     }
@@ -139,6 +149,10 @@ impl Request {
                 id,
                 result: result.and_then(read_state),
             },
+            Self::Information => PanelEvent::InformationComplete {
+                id,
+                result: result.map(PanelInformation::from_reply),
+            },
         }
     }
 }
@@ -168,6 +182,10 @@ pub struct Panel {
 }
 
 impl Panel {
+    pub fn read_information(&mut self) -> Result<RequestId, RequestError> {
+        self.start(Request::Information, None)
+    }
+
     pub fn read_illumination(&mut self) -> Result<RequestId, RequestError> {
         self.start(Request::Illumination(IlluminationRequest::Read), None)
     }
@@ -197,8 +215,8 @@ impl Panel {
         )
     }
 
-    /// Disable the other color first. Multiple writes are acknowledged individually, not atomic.
-    /// On failure, earlier writes remain in effect; no rollback is attempted.
+    /// Disable the other color before enabling the requested one.
+    /// Each acknowledged write remains applied if a later write fails.
     pub fn set_indicator_color(
         &mut self,
         indicator: Indicator,
@@ -255,8 +273,8 @@ impl Panel {
         Ok(id)
     }
 
-    /// Poll without waiting for input or acknowledgements; call regularly to service deadlines.
-    /// None means no report, not a disconnect or a released button.
+    /// Read an available report and service pending request deadlines.
+    /// Call regularly; None indicates that no report is available.
     pub fn poll(&mut self) -> Result<Option<PanelEvent>, DeviceError> {
         if let Some(pending) = self.pending.take_if(|p| Instant::now() >= p.deadline) {
             let result = Err(RequestError::Timeout);

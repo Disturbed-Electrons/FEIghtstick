@@ -44,7 +44,7 @@ enum Command {
         #[arg(long)]
         shutdown_file: Option<PathBuf>,
     },
-    /// Stream decoded reports as JSON lines, without creating a gamepad.
+    /// Stream decoded reports as JSON lines.
     Monitor {
         #[command(flatten)]
         input: InputOptions,
@@ -61,7 +61,7 @@ enum Command {
     },
     /// Print the built-in TOML gamepad profile.
     Profile,
-    /// Validate a TOML profile without opening hardware.
+    /// Validate the bindings and settings in a TOML profile.
     CheckProfile { path: PathBuf },
 }
 
@@ -79,6 +79,8 @@ struct InputOptions {
 }
 
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
+
+const MAX_REPORTS_PER_POLL: usize = 64;
 
 fn main() -> std::process::ExitCode {
     match execute(Cli::parse()) {
@@ -271,7 +273,7 @@ fn listen(
                     // Consume queued reports before resetting the origin, retaining
                     // button releases even when no later packet arrives.
                     let mut idle = false;
-                    for _ in 0..64 {
+                    for _ in 0..MAX_REPORTS_PER_POLL {
                         let Some(event) = connection.panel.poll()? else {
                             idle = true;
                             break;
@@ -337,8 +339,8 @@ fn listen(
             let Some(connection) = slot else {
                 continue;
             };
-            // Bound each drain so a busy panel cannot starve the other panel or shutdown.
-            for _ in 0..64 {
+            // Limit each drain to leave time for the other panel and shutdown handling.
+            for _ in 0..MAX_REPORTS_PER_POLL {
                 match connection.panel.poll() {
                     Ok(Some(PanelEvent::Input(bytes))) => match connection.decoder.decode(&bytes) {
                         Ok(frame) => {
@@ -374,6 +376,9 @@ fn listen(
                             result: Err(error), ..
                         }
                         | PanelEvent::IlluminationComplete {
+                            result: Err(error), ..
+                        }
+                        | PanelEvent::InformationComplete {
                             result: Err(error), ..
                         },
                     )) => {

@@ -13,7 +13,7 @@ pub enum Color {
     Green,
 }
 
-/// LED identities are independent of input controls. Coarse/Fine's control group is unresolved.
+/// Named panel indicators with channel mappings for each color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Indicator {
     Coarse,
@@ -50,7 +50,7 @@ impl Indicator {
         }
     }
 
-    /// (Red channel, optional green channel). No universal color-channel offset exists.
+    /// Red channel and optional green channel for this indicator.
     pub const fn channels(self) -> (u8, Option<u8>) {
         match self {
             Self::Coarse => (0, None),
@@ -138,8 +138,7 @@ impl LedRequest {
     }
 }
 
-/// A command reply interpreted using the single-channel LED layout (operations `07`/`08`).
-/// For other operations, `channel`, `value`, and `sequence` may contain different data.
+/// A command reply with `channel`, `value`, and `sequence` interpreted using the `07`/`08` LED layout.
 /// The LED request sequence at byte 19 is separate from the control-report sequence at byte 1.
 #[derive(Debug, Clone, Copy)]
 pub struct CommandReply {

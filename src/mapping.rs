@@ -1,4 +1,4 @@
-//! Application mapping is separate from the panel's wire protocol.
+//! Configurable mappings from panel readings to gamepad controls.
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -149,7 +149,7 @@ impl Mapper {
                 Encoding::Button { .. } => 1.0,
                 Encoding::Pressure { .. } => f32::from(PRESSURE_REFERENCE),
                 Encoding::Relative { .. } => {
-                    // Zero relative increments do not stop an active motion pulse.
+                    // Zero relative increments preserve the active motion pulse.
                     if reading.value == Some(0) {
                         continue;
                     }

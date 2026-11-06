@@ -1,4 +1,4 @@
-//! The backend is selected at compile time, without platform-specific user configuration.
+//! Platform-specific virtual gamepad backends selected at compile time.
 use crate::mapping::GamepadState;
 
 #[cfg(target_os = "linux")]
