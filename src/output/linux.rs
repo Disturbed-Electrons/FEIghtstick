@@ -56,23 +56,23 @@ impl Gamepad {
 
 impl Output for Gamepad {
     fn send(&mut self, state: &GamepadState) -> Result<(), OutputError> {
-        let mut events = Vec::with_capacity(21);
-        for (index, button) in BUTTONS.into_iter().enumerate() {
-            events.push(InputEvent::new(
-                EventType::KEY.0,
-                button.0,
-                i32::from(state.buttons & (1 << index) != 0),
-            ));
-        }
-        for (index, axis) in AXES.into_iter().enumerate() {
-            let value = i32::from(state.axes[index]);
-            let value = if index == 1 || index == 3 {
+        let events: [InputEvent; BUTTONS.len() + AXES.len()] = std::array::from_fn(|index| {
+            if let Some(button) = BUTTONS.get(index) {
+                return InputEvent::new(
+                    EventType::KEY.0,
+                    button.0,
+                    i32::from(state.buttons & (1 << index) != 0),
+                );
+            }
+            let axis_index = index - BUTTONS.len();
+            let value = i32::from(state.axes[axis_index]);
+            let value = if axis_index == 1 || axis_index == 3 {
                 -value
             } else {
                 value
             };
-            events.push(InputEvent::new(EventType::ABSOLUTE.0, axis.0, value));
-        }
+            InputEvent::new(EventType::ABSOLUTE.0, AXES[axis_index].0, value)
+        });
         self.device.emit(&events)?;
         Ok(())
     }

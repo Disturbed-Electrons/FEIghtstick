@@ -301,10 +301,10 @@ impl Panel {
             0 => Ok(&bytes),
             status => Err(RequestError::Status(status)),
         };
-        if result.is_err() || pending.next.is_none() {
+        let (Ok(_), Some(next)) = (&result, pending.next.take()) else {
             return Ok(Some(pending.request.complete(pending.id, result)));
-        }
-        let request = Request::Led(pending.next.take().unwrap());
+        };
+        let request = Request::Led(next);
         match self.send(request) {
             Ok((sequence, deadline)) => {
                 self.pending = Some(Pending {

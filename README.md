@@ -12,7 +12,7 @@ Rust driver for FEI Titan control panels connected through the HPC2 USB adapter.
 
 The build selects the platform backend automatically. Panel input and the JSON monitor are available on all three platforms. Windows uses the signed [ViGEmBus](https://github.com/nefarius/ViGEmBus) driver. macOS applications must support generic HID gamepads.
 
-To build locally, install stable [Rust](https://rustup.rs/) and the platform's build tools: Xcode Command Line Tools, Visual Studio C++ Build Tools, or a Linux C toolchain.
+To build locally, install [Rust](https://rustup.rs/) 1.85 or newer and the platform's build tools: Xcode Command Line Tools, Visual Studio C++ Build Tools, or a Linux C toolchain.
 
 ```sh
 cargo build --release
@@ -136,7 +136,7 @@ Commands `07` and `08` read or write one electrical channel. All offsets below r
 | 4–18 | Zero | Ignored |
 | 19 | Request sequence | Matching request sequence |
 
-HIDAPI writes prepend a zero report-ID byte (21 bytes total); native macOS `IOHIDDeviceSetReport` takes the 20-byte payload with report ID zero. Replies arrive on the input endpoint.
+FEIghtstick prepends a zero report-ID byte to the 20-byte payload before writing through HIDAPI. Replies arrive on the input endpoint.
 
 The table lists electrical output channels in decimal:
 

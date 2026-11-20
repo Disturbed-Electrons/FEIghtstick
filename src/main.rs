@@ -18,7 +18,7 @@ use feightstick::{
     device::{Panel, PanelEvent, Usb},
     mapping::{DEFAULT_PROFILE, GamepadState, Mapper, Profile},
     output::{Gamepad, Output},
-    protocol::{Decoder, Frame, Side},
+    protocol::{Decoder, Frame, REPORT_LEN, Side},
 };
 
 #[derive(Parser)]
@@ -137,7 +137,7 @@ fn execute(cli: Cli) -> Result {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let bytes: Vec<u8> = serde_json::from_str(&line).map_err(|error| {
+                let bytes: [u8; REPORT_LEN] = serde_json::from_str(&line).map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("line {}: {error}", line_number + 1),
